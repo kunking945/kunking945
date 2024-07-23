@@ -1,0 +1,345 @@
+WITH tmp_cost AS (  -- 190 w
+                  SELECT aufnr         --  订单号
+                        ,KOSTL      --  成本中心
+                        ,LTEXT        --  成本中心描述
+            FROM (
+                  SELECT a.aufnr         --  订单号
+                        ,REPLACE(LTRIM(REPLACE(cost.KOSTL,'0',' ')),' ','0') AS KOSTL      --  成本中心
+                        ,ct.LTEXT        --  成本中心描述
+                        ,ROW_NUMBER() over(PARTITION BY a.aufnr order by cost.KOSTL) AS rs
+                   FROM AFKO a
+              LEFT JOIN AFVC c ON a.mandt=c.mandt AND a.PLNNR=c.PLNNR AND a.AUFPL=c.AUFPL
+              LEFT JOIN CRHD d ON c.mandt=d.mandt AND c.ARBID=d.OBJID 
+              LEFT JOIN CSKT dt ON dt.mandt=d.mandt AND dt.SPRAS='1' AND REPLACE(LTRIM(REPLACE(dt.KOSTL,'0',' ')),' ','0') = d.ARBPL AND dt.DATBI='99991231'
+              LEFT JOIN CRCO cost ON cost.mandt=d.mandt AND cost.OBJID=d.OBJID AND cost.ENDDA='99991231'
+              LEFT JOIN CSKT ct ON cost.mandt=ct.mandt AND ct.SPRAS='1' AND REPLACE(LTRIM(REPLACE(ct.KOSTL,'0',' ')),' ','0') = REPLACE(LTRIM(REPLACE(cost.KOSTL,'0',' ')),' ','0') AND ct.DATBI='99991231' AND cost.OBJID=d.OBJID AND cost.ENDDA='99991231'
+                  WHERE d.arbpl NOT IN ('33110121','33310158') 
+                    AND c.LTXA1 NOT IN ('印刷','前加工')
+) t 
+WHERE t.rs = 1
+ ),
+ yinshua AS (  -- 60 W
+                  SELECT aufnr         -- 订单号
+                        ,KOSTL      -- 成本中心
+                        ,LTEXT        -- 成本中心描述
+            FROM (
+                  SELECT a.aufnr         -- 订单号
+                        ,REPLACE(LTRIM(REPLACE(cost.KOSTL,'0',' ')),' ','0') AS KOSTL      -- 成本中心
+                        ,ct.LTEXT        -- 成本中心描述
+                        ,ROW_NUMBER() over(PARTITION BY a.aufnr order by cost.KOSTL) AS rs
+                   FROM AFKO a
+              LEFT JOIN AFVC c ON a.mandt=c.mandt AND a.PLNNR=c.PLNNR AND a.AUFPL=c.AUFPL
+              LEFT JOIN CRHD d ON c.mandt=d.mandt AND c.ARBID=d.OBJID 
+              LEFT JOIN CSKT dt ON dt.mandt=d.mandt AND dt.SPRAS='1' AND REPLACE(LTRIM(REPLACE(dt.KOSTL,'0',' ')),' ','0') = d.ARBPL AND dt.DATBI='99991231'
+              LEFT JOIN CRCO cost ON cost.mandt=d.mandt AND cost.OBJID=d.OBJID AND cost.ENDDA='99991231'
+              LEFT JOIN CSKT ct ON cost.mandt=ct.mandt AND ct.SPRAS='1' AND REPLACE(LTRIM(REPLACE(ct.KOSTL,'0',' ')),' ','0') = REPLACE(LTRIM(REPLACE(cost.KOSTL,'0',' ')),' ','0') AND ct.DATBI='99991231' AND cost.OBJID=d.OBJID AND cost.ENDDA='99991231'
+                  WHERE d.arbpl NOT IN ('33110121','33310158') 
+                    AND c.LTXA1 = '印刷'
+) t 
+WHERE t.rs = 1
+ ),
+ chgc AS (  -- 43 W
+            select DISTINCT a.ebeln
+            ,b.WERKS   
+            ,a.IHREZ
+        from EKKO a 
+        join EKPO b
+        on a.mandt=b.mandt 
+        and a.ebeln=b.ebeln
+        where substr(b.ebeln,1,2)='99'
+ ),
+zppr0016 AS (  --66 W
+             SELECT REPLACE(LTRIM(REPLACE(a.IDNRK,'0',' ')),' ','0') AS IDNRK
+                   ,b.WERKS
+                   ,count(1) AS cnt
+              FROM stpo a 
+              JOIN mast b 
+                ON a.mandt =b.mandt 
+               AND a.STLNR=b.STLNR 
+             WHERE a.STLTY='M' 
+             group by REPLACE(LTRIM(REPLACE(a.IDNRK,'0',' ')),' ','0')
+                   ,b.WERKS
+),
+mm60 AS (  --400 W
+              SELECT REPLACE(LTRIM(REPLACE(k.matnr,'0',' ')),' ','0') AS matnr
+                     ,k.werks AS bwkey
+                     ,substr(k.KADKY,1,6) AS data_date
+                     ,sum((CASE WHEN c.PEINH=0 THEN 0 ELSE c.wertn/c.PEINH END)) AS mm60_cost  --加工费
+                 FROM keko k
+                 JOIN ckis c
+                   ON k.mandt = c.mandt 
+                  AND k.KALNR = c.KALNR
+                  AND c.KADKY = k.KADKY
+                WHERE c.wertn > 0 
+                  and k.FEH_STA='FR'
+                  AND k.KADKY >= '20220101'
+                   AND c.KADKY >= '20220101'
+                GROUP BY REPLACE(LTRIM(REPLACE(k.matnr,'0',' ')),' ','0') 
+                        ,k.werks 
+                        ,substr(k.KADKY,1,6)
+),
+huilv AS (  --808
+         SELECT fcurr  -- 源币种
+              -- ,SUBSTR(CAST(CAST(('99999999'-gdatu) AS NUMBER(15,0)) AS VARCHAR2(15)),1,6) as gdatu  -- 日期
+              ,SUBSTR(TO_CHAR('99999999'-gdatu),1,6) AS gdatu  -- 日期
+              ,ukurs  -- 汇率
+           FROM tcurr
+          WHERE kurst = 'M'
+            AND tcurr ='CNY'  -- 转换后币种
+            --AND SUBSTR(CAST(CAST(('99999999'-gdatu) AS NUMBER(15,0)) AS VARCHAR2(15)),7) = '01'
+            AND SUBSTR(TO_CHAR('99999999'-gdatu),7) = '01'
+),
+temp_aufm AS (
+   SELECT b.WERKS
+         ,b.MATNR
+         ,REPLACE(LTRIM(REPLACE(b.MATNR,'0',' ')),' ','0') AS F_MATNR
+         ,b.BWART   -- 移动类型
+         ,b.BLDAT   -- 凭证日期
+         ,b.budat   -- 过账日期
+         ,b.MBLNR   -- 物料凭证编号
+         ,b.MJAHR   -- 物料凭证年度
+         ,b.WAERS   -- 货币
+         ,b.SHKZG   -- 借贷项
+         ,b.KDAUF
+         ,REPLACE(LTRIM(REPLACE(b.KDAUF,'0',' ')),' ','0') AS F_KDAUF
+         ,b.KDPOS
+         ,REPLACE(LTRIM(REPLACE(b.KDPOS,'0',' ')),' ','0') AS F_KDPOS
+         ,b.ERFME   -- 条目单位
+         ,b.meins   -- 基本计量单位
+         ,b.mandt
+         ,b.AUFNR
+         ,b.menge
+         ,b.DMBTR
+         ,c.BKTXT   --凭证抬头文本
+     FROM AUFM b
+     left join mkpf c on b.mandt=c.mandt and b.MBLNR=c.MBLNR and b.MJAHR=c.MJAHR
+    WHERE b.budat >= '20220101'
+ ),
+bizhong AS (
+            SELECT DISTINCT b.WAERS  -- 公司币种
+                  ,a.BWKEY  -- 工厂
+              FROM T001k a
+              JOIN T001 b
+                ON a.mandt = b.mandt 
+               AND a.BUKRS = b.BUKRS
+ ),
+ jiagongfei AS (
+               SELECT k.matnr
+                     ,k.werks
+                     ,k.KADKY
+                     ,sum(CASE WHEN c.PEINH=0 THEN 0 ELSE c.wertn/c.PEINH end) AS wertn  --加工费
+                 FROM keko k
+                 JOIN ckis c
+                   ON k.mandt = c.mandt 
+                  AND k.KALNR = c.KALNR
+                  AND c.KADKY = k.KADKY
+                WHERE c.wertn > 0 
+                  AND c.TYPPS ='E' 
+                GROUP BY k.matnr
+                        ,k.werks
+                        ,k.KADKY
+ ),
+ BOM_ZD as (
+ SELECT distinct 
+    m.MATNR ,
+    t.IDNRK  
+FROM
+    mast m
+    inner join stko k on m.mandt = k.mandt
+    and k.stlty = 'M'
+    AND --" 物料BOM
+    k.stlnr = m.stlnr
+    AND k.stlal = m.stlal
+    AND k.lkenz <> 'X'
+    AND k.stlst = '01'
+    inner join stas s on k.mandt = s.mandt
+    and k.stlty = s.stlty
+    AND k.stlnr = s.stlnr
+    AND k.stlal = s.stlal
+    inner join stpo t on s.mandt = t.mandt
+    and s.stlty = t.stlty
+    AND s.stlnr = t.stlnr
+    AND s.stlkn = t.stlkn
+    left join T006A t1 on t1.msehi = t."MEINS"
+    AND T1.SPRAS = '1'
+    AND T1.MANDT = T.MANDT
+    LEFT JOIN MARC C ON C.MATNR =   t.IDNRK  
+    AND m.MANDT = C.MANDT
+    AND m.WERKS = C.WERKS
+    LEFT JOIN MARA A ON  A.MATNR =   t.IDNRK 
+    AND m.MANDT = A.MANDT
+     left join T006A t2 on t2.msehi = a."MEINS"
+    AND T2.SPRAS = '1'
+    AND T2.MANDT = a.MANDT
+WHERE
+    t.mandt = '800'    AND m.MATNR like  '000000006%'
+    and   t.IDNRK like '000000001%'
+ )
+SELECT b.WERKS   -- 工厂
+              ,CASE WHEN REPLACE(LTRIM(REPLACE(a.aufnr,'0',' ')),' ','0') LIKE '99%' THEN ch.WERKS 
+                    ELSE b.WERKS END AS out_werks  -- 出货工厂
+              ,REPLACE(LTRIM(REPLACE(a.aufnr,'0',' ')),' ','0') AS aufnr -- 订单
+              ,b.F_MATNR AS matnr -- 物料
+              ,zd.idnrk AS matnr_zd
+              ,CASE WHEN zd.idnrk LIKE '1%' THEN '整灯'
+                    WHEN zd.idnrk LIKE '2999%' THEN '散件'
+                    ELSE '半成品' END AS matnr_type
+              ,b.BWART   -- 移动类型
+              ,b.BLDAT   -- 凭证日期
+              ,b.budat   -- 过账日期
+              ,b.MBLNR   -- 物料凭证编号
+              ,b.MJAHR   -- 物料凭证年度
+              ,b.WAERS   -- 货币
+              ,b.SHKZG   -- 借贷项
+              ,b.F_KDAUF AS KDAUF  -- 销售订单
+              ,CASE WHEN b.F_KDAUF LIKE '1%' THEN '正常销售订单'
+                    WHEN b.F_KDAUF LIKE '2%' THEN '宜家虚拟备货订单'
+                    ELSE '' END AS kdauf_type
+              ,b.F_KDPOS AS KDPOS -- 销售订单项目
+              ,b.ERFME   -- 条目单位
+              ,b.meins   -- 基本计量单位
+              ,COALESCE(CASE WHEN c.KOSTL IN ('33010187','33010163') AND (CASE WHEN zd.idnrk LIKE '1%' THEN '整灯'
+                                                                                                               WHEN zd.idnrk LIKE '2999%' THEN '散件'
+                                                                                                               ELSE '半成品' END) = '半成品' THEN '33010187' 
+					WHEN c.KOSTL IN ('33010187','33010163') AND (CASE WHEN zd.idnrk LIKE '1%' THEN '整灯'
+                                                                                                               WHEN zd.idnrk LIKE '2999%' THEN '散件'
+                                                                                                               ELSE '半成品' END) IN ('散件','整灯') THEN '33010163'																						   
+					ELSE c.KOSTL END,ys.KOSTL) AS KOSTL -- 成本中心
+
+              ,COALESCE(CASE WHEN c.KOSTL IN ('33010187','33010163') AND (CASE WHEN zd.idnrk LIKE '1%' THEN '整灯'
+                                                                                                               WHEN zd.idnrk LIKE '2999%' THEN '散件'
+                                                                                                               ELSE '半成品' END) = '半成品' THEN '代工事业部-光源BU-光源制造部-生产三部-灯丝灯前加工' 
+					WHEN c.KOSTL IN ('33010187','33010163') AND (CASE WHEN zd.idnrk LIKE '1%' THEN '整灯'
+                                                                                                               WHEN zd.idnrk LIKE '2999%' THEN '散件'
+                                                                                                               ELSE '半成品' END) IN ('散件','整灯') THEN '代工事业部-光源BU-光源制造部-生产三部-灯丝灯组装'																						   
+					ELSE c.LTEXT END,ys.LTEXT) AS LTEXT -- 成本中心描述
+              ,REPLACE(LTRIM(REPLACE(vp.matnr,'0',' ')),' ','0') AS order_matnr  -- 销售订单物料号
+              ,m.MATKL   -- 物料组
+              ,t3.WGBEZ  -- 物料组描述
+              ,(CASE WHEN b.SHKZG='H' THEN b.menge  ELSE b.menge * -1  END ) menge      -- 以基本单位计的数量+符号表示的数量 (MEINS)
+              ,(CASE WHEN b.SHKZG='H' THEN b.DMBTR  ELSE b.DMBTR * -1  END ) DMBTR      -- 本位币金额
+			  ,CASE WHEN k.AUART='ZP13' THEN 'FALSE'
+			        WHEN SUBSTR(REPLACE(LTRIM(REPLACE(a.aufnr,'0',' ')),' ','0'),1,2) IN ('90','91') THEN 'FALSE'
+			        WHEN COALESCE(CASE WHEN c.KOSTL IN ('33010187','33010163') AND (CASE WHEN zd.idnrk LIKE '1%' THEN '整灯'
+                                                                                                               WHEN zd.idnrk LIKE '2999%' THEN '散件'
+                                                                                                               ELSE '半成品' END) = '半成品' THEN '33010187' 
+					WHEN c.KOSTL IN ('33010187','33010163') AND (CASE WHEN zd.idnrk LIKE '1%' THEN '整灯'
+                                                                                                               WHEN zd.idnrk LIKE '2999%' THEN '散件'
+                                                                                                               ELSE '半成品' END) IN ('散件','整灯') THEN '33010163'																						   
+					ELSE c.KOSTL END,ys.KOSTL) IN ('33010119','33010118','33010196','33010130','33010286','33110122','33010127') AND b.F_KDAUF IS NULL THEN 'FALSE'
+                          WHEN zd.idnrk = REPLACE(LTRIM(REPLACE(vp.matnr,'0',' ')),' ','0') THEN 'TRUE'
+                          WHEN b.WERKS IN ('5602','6501','6502','6503','6504') AND b.F_KDAUF IS NULL THEN 'FALSE'
+					ELSE 
+						   CASE /* WHEN (CASE WHEN b.F_MATNR LIKE '1%' THEN '整灯'
+										WHEN b.F_MATNR LIKE '2999%' THEN '散件'
+										ELSE '半成品' END
+									 ) = '半成品' AND t3.WGBEZ like '%毛泡组件%' THEN 'TRUE'
+								WHEN (CASE WHEN b.F_MATNR LIKE '1%' THEN '整灯'
+										WHEN b.F_MATNR LIKE '2999%' THEN '散件'
+										ELSE '半成品' END
+									 ) = '半成品' AND t3.WGBEZ like '%灌胶组件%' AND c.KOSTL = '33010159' THEN 'TRUE'
+								WHEN (CASE WHEN b.F_MATNR LIKE '1%' THEN '整灯'
+										WHEN b.F_MATNR LIKE '2999%' THEN '散件'
+										ELSE '半成品' END
+									 ) = '半成品' AND c.KOSTL = '33010194' THEN 'TRUE'
+								*/
+								WHEN (CASE WHEN zd.idnrk LIKE '1%' THEN '整灯'
+										   WHEN zd.idnrk LIKE '2999%' THEN '散件'
+										   ELSE '半成品' END
+									 ) = '半成品' THEN 'FALSE'    
+                                WHEN
+								     (CASE WHEN zd.idnrk LIKE '1%' THEN '整灯'
+										WHEN zd.idnrk LIKE '2999%' THEN '散件'
+										ELSE '半成品' END
+									 ) IN ('整灯','散件') AND vp.matnr IS NULL AND zp.cnt IS NULL THEN 'TRUE'
+								ELSE 'FALSE' 
+						END
+			   END AS check2  -- 核查2
+		       ,zp.cnt as zppr0016_cnt
+               ,CASE WHEN REPLACE(LTRIM(REPLACE(a.aufnr,'0',' ')),' ','0') LIKE '99%' THEN COALESCE(m6.mm60_cost,m7.mm60_cost)  -- MODIFY BY WLX  m6.mm60_cost取不到的时候，取最近的一条
+               		WHEN (CASE WHEN b.SHKZG='H' THEN b.menge  ELSE b.menge * -1  END )=0 THEN 0 
+                     ELSE (CASE WHEN b.SHKZG='H' THEN b.DMBTR ELSE b.DMBTR * -1  END ) / (CASE WHEN b.SHKZG='H' THEN b.menge  ELSE b.menge * -1  END ) END AS simple_cost              -- 标准成本
+               ,h.ukurs  -- 汇率
+            --    ,CASE WHEN vp.kwmeng = 0 THEN 0 ELSE 
+            --                                    CASE WHEN vp.WAERK = 'CNY' THEN vp.NETWR/vp.kwmeng 
+            --                                         ELSE (vp.NETWR/vp.kwmeng) * h.ukurs 
+            --                                         END
+            --                                 END AS unit_price  -- 单价除税(人民币)
+               ,CASE WHEN b.WERKS = '6502' AND REPLACE(LTRIM(REPLACE(vk.KUNNR,'0',' ')),' ','0')  = '93300' THEN 
+                                                                      CASE WHEN vpzh.kwmeng = 0 THEN 0 
+                                                                      WHEN vpzh.UMZIZ = 0 THEN 0 ELSE 
+                                                                                                     CASE WHEN vpzh.WAERK = 'CNY' THEN vpzh.NETWR/vpzh.kwmeng/vpzh.UMZIZ 
+                                                                                                          ELSE vpzh.NETWR/vpzh.kwmeng /vpzh.UMZIZ -- * h.ukurs 
+                                                                                                          END
+                                                                           END
+                     ELSE 
+                                                                      CASE WHEN vp.kwmeng = 0 THEN 0 WHEN vpzh.UMZIZ = 0 THEN 0  ELSE 
+                                                                                                     CASE WHEN vp.WAERK = 'CNY' THEN vp.NETWR/vp.kwmeng /vp.UMZIZ
+                                                                                                          ELSE vp.NETWR/vp.kwmeng /vp.UMZIZ -- * h.ukurs 
+                                                                                                          END
+                                                                           END
+                     END AS unit_price_manage   -- 单价除税(人民币)
+                  ,CASE WHEN b.WERKS = '6502' AND REPLACE(LTRIM(REPLACE(vk.KUNNR,'0',' ')),' ','0')  = '93300' THEN 
+                                                                      CASE WHEN vpzh.kwmeng = 0 THEN 0 WHEN vpzh.UMZIZ = 0 THEN 0  ELSE 
+                                                                                                     CASE WHEN vpzh.WAERK = 'CNY' THEN vpzh.NETWR/vpzh.kwmeng/vpzh.UMZIZ 
+                                                                                                          ELSE vpzh.NETWR/vpzh.kwmeng/vpzh.UMZIZ  * h1.ukurs 
+                                                                                                          END
+                                                                           END
+                     ELSE 
+                                                                      CASE WHEN vp.kwmeng = 0 THEN 0 WHEN vpzh.UMZIZ = 0 THEN 0  ELSE 
+                                                                                                     CASE WHEN vp.WAERK = 'CNY' THEN vp.NETWR/vp.kwmeng /vp.UMZIZ
+                                                                                                          ELSE vp.NETWR/vp.kwmeng/vp.UMZIZ   * h.ukurs 
+                                                                                                          END
+                                                                           END
+                     END AS unit_price   -- 单价除税(人民币)
+               ,(CASE WHEN b.WERKS = '6502' AND REPLACE(LTRIM(REPLACE(vk.KUNNR,'0',' ')),' ','0')  = '93300' THEN vpzh.WAERK else vp.WAERK end) AS zsdq069_WAERK   -- zsdq069币种
+               ,bz.WAERS AS T001_WAERS  --T001币种
+               ,mk.MAKTX  -- 物料短描述
+               ,vp.kwmeng AS  KWMENG
+               ,vp.NETWR AS NETWR
+               ,vk.KUNNR  -- 客户代码
+               ,COALESCE(jg.wertn,0) AS WERTN  -- 加工费
+               ,CASE WHEN mk.MAKTX LIKE '%驱动组件%' THEN 1 
+                     WHEN mk.MAKTX LIKE '%光源组件%' THEN 1 
+                     WHEN mk.MAKTX LIKE '%灌胶组件%' THEN 1 
+                     WHEN mk.MAKTX LIKE '%DOB组件%' THEN 1 
+                     WHEN mk.MAKTX LIKE '%烧录组件%' THEN 1 
+                     WHEN mk.MAKTX LIKE '%驱动贴片组件%' THEN 1 
+                     WHEN mk.MAKTX LIKE '%电源%' THEN 1 
+                     WHEN mk.MAKTX LIKE '%制程组件%' THEN 1 
+                     WHEN mk.MAKTX LIKE '%灯头组件%' THEN 1 
+                     WHEN mk.MAKTX LIKE '%灯头%组件%' THEN 1 
+                     WHEN mk.MAKTX LIKE '%灯头右%' THEN 1 
+                     WHEN mk.MAKTX LIKE '%灯头组%' THEN 1 
+                     WHEN mk.MAKTX LIKE '%制程虚拟组件%' THEN 1 
+                     ELSE 0 END AS COST_FLAG
+                ,b.BKTXT
+                ,ch.IHREZ
+		  FROM AFKO a
+	LEFT JOIN AUFK k on k.aufnr = a.aufnr	  
+     LEFT JOIN chgc ch ON REPLACE(LTRIM(REPLACE(a.aufnr,'0',' ')),' ','0') = REPLACE(LTRIM(REPLACE(ch.ebeln,'0',' ')),' ','0')
+     LEFT JOIN tmp_cost c ON a.aufnr = c.aufnr
+     LEFT JOIN yinshua ys ON ys.aufnr = a.aufnr
+     JOIN temp_aufm b ON a.mandt = b.mandt AND a.AUFNR = b.AUFNR AND b.budat >= '20220101'
+     LEFT JOIN BOM_ZD zd ON zd.matnr=b.F_MATNR
+     LEFT JOIN zppr0016 zp ON zp.IDNRK = zd.idnrk AND zp.WERKS = b.WERKS
+     LEFT JOIN (select mandt,vbeln,posnr,vbeln1,posnr1 from zsdt0146) zh ON b.F_KDAUF =REPLACE(LTRIM(REPLACE(zh.vbeln1,'0',' ')),' ','0') AND b.F_KDPOS =REPLACE(LTRIM(REPLACE(zh.posnr1,'0',' ')),' ','0')  AND b.mandt = zh.mandt    -- 订单号转换
+     LEFT JOIN VBAP vpzh ON vpzh.mandt = zh.mandt AND vpzh.vbeln = zh.vbeln AND vpzh.posnr = zh.posnr  -- 转换后的新订单关联zsdq069(VBAP)
+     LEFT JOIN VBAP vp ON vp.mandt = b.mandt AND vp.vbeln = b.KDAUF AND vp.posnr=b.KDPOS
+     LEFT JOIN VBAK vk ON vp.mandt = vk.mandt AND vp.vbeln = vk.vbeln
+   
+     LEFT JOIN MARA m ON m.mandt = b.mandt AND m.matnr = b.matnr
+     LEFT JOIN T023T t3 ON t3.mandt = m.mandt AND t3.SPRAS = '1' AND t3.MATKL = m.MATKL
+     LEFT JOIN mm60 m6 ON m6.matnr = zd.idnrk
+                      AND m6.bwkey = CASE WHEN REPLACE(LTRIM(REPLACE(a.aufnr,'0',' ')),' ','0') LIKE '99%' THEN ch.WERKS ELSE b.WERKS END
+                      AND m6.data_date = SUBSTR(b.budat,1,6)
+     LEFT JOIN mm60 m7 ON m7.matnr = zd.idnrk
+                      AND m7.bwkey = CASE WHEN REPLACE(LTRIM(REPLACE(a.aufnr,'0',' ')),' ','0') LIKE '99%' THEN ch.WERKS ELSE b.WERKS END
+                      AND m7.data_date =SUBSTR(to_char(ADD_MONTHS(to_date(b.budat,'yyyymmdd'),-1),'yyyymmdd'),1,6) 
+     LEFT JOIN huilv h ON h.gdatu = SUBSTR(b.budat,1,6) AND h.fcurr = vp.WAERK
+     LEFT JOIN huilv h1 ON h1.gdatu = SUBSTR(b.budat,1,6) AND h1.fcurr = vpzh.WAERK
+     LEFT JOIN bizhong bz ON bz.BWKEY = b.WERKS
+     LEFT JOIN makt mk ON REPLACE(LTRIM(REPLACE(mk.MATNR,'0',' ')),' ','0') = zd.idnrk AND mk.SPRAS = '1'   -- 物料描述
+     LEFT JOIN jiagongfei jg ON REPLACE(LTRIM(REPLACE(jg.matnr,'0',' ')),' ','0') = zd.idnrk AND jg.werks = b.WERKS AND SUBSTR(jg.KADKY,1,6) = SUBSTR(b.budat,1,6)  -- 加工费
+     
+         WHERE b.BWART IN ('101','102')
